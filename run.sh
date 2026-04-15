@@ -66,13 +66,18 @@ if [ -z "$GH_TOKEN" ]; then
   echo "Warning: Could not retrieve GitHub token. gh will not be authenticated."
 fi
 
-# Extract Claude OAuth token from macOS keychain
-CLAUDE_CREDS="$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null || true)"
-if [ -n "$CLAUDE_CREDS" ]; then
-  CLAUDE_TOKEN="$(echo "$CLAUDE_CREDS" | python3 -c "import sys,json; print(json.load(sys.stdin)['claudeAiOauth']['accessToken'])")"
-else
-  echo "Error: Could not retrieve Claude credentials from keychain."
-  exit 1
+# Claude API key: prefer .env file (long-lived), fall back to Keychain OAuth token (may expire)
+if [ -f "$SCRIPT_DIR/.env" ]; then
+  CLAUDE_TOKEN="$(grep '^ANTHROPIC_API_KEY=' "$SCRIPT_DIR/.env" | cut -d= -f2-)"
+fi
+if [ -z "$CLAUDE_TOKEN" ]; then
+  CLAUDE_CREDS="$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null || true)"
+  if [ -n "$CLAUDE_CREDS" ]; then
+    CLAUDE_TOKEN="$(echo "$CLAUDE_CREDS" | python3 -c "import sys,json; print(json.load(sys.stdin)['claudeAiOauth']['accessToken'])")"
+  else
+    echo "Error: No API key found. Add ANTHROPIC_API_KEY to .env or log in to Claude Code."
+    exit 1
+  fi
 fi
 
 echo "Running Claude in sandbox (cpus=$CPUS, mem=8g)..."
