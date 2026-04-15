@@ -4,22 +4,58 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 IMAGE_NAME="claude-sandbox"
 
-# Build the container if needed
-echo "Building container..."
-docker build -q -t "$IMAGE_NAME" "$SCRIPT_DIR" > /dev/null
+# Parse arguments: extract --pr flag, everything else is the prompt
+PROMPT=""
+PR_URL=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --pr)
+      PR_URL="$2"
+      shift 2
+      ;;
+    *)
+      PROMPT="$PROMPT $1"
+      shift
+      ;;
+  esac
+done
+PROMPT="${PROMPT# }"  # trim leading space
 
-if [ $# -eq 0 ]; then
-  echo "Usage: ./run.sh \"your prompt here\""
+if [ -z "$PROMPT" ]; then
+  echo "Usage: ./run.sh \"your prompt here\" [--pr <github-pr-url>]"
   exit 1
 fi
 
-PROMPT="$*"
+# Build the container if needed
+echo "Building container..."
+docker build -q -t "$IMAGE_NAME" "$SCRIPT_DIR" > /dev/null
 
 # Unique task directory for this container run
 RUN_ID="run-$(date +%Y%m%d-%H%M%S)-$$"
 TASKS_DIR="$SCRIPT_DIR/tasks/$RUN_ID"
 mkdir -p "$TASKS_DIR"
 echo "Task directory: $TASKS_DIR"
+
+# If --pr was provided, extract the last "Agent Trial Results" comment
+if [ -n "$PR_URL" ]; then
+  # Parse owner/repo and PR number from URL
+  # Handles: https://github.com/owner/repo/pull/123
+  PR_PATH="${PR_URL#https://github.com/}"
+  REPO="$(echo "$PR_PATH" | cut -d/ -f1-2)"
+  PR_NUMBER="$(echo "$PR_PATH" | cut -d/ -f4)"
+
+  echo "Fetching last Agent Trial Results from $REPO#$PR_NUMBER..."
+  COMMENT_BODY="$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
+    --paginate \
+    --jq '[.[] | select(.body | test("🧪 Agent Trial Results"))] | last | .body' 2>/dev/null || true)"
+
+  if [ -n "$COMMENT_BODY" ]; then
+    echo "$COMMENT_BODY" > "$TASKS_DIR/trajectory_analysis.md"
+    echo "Saved trajectory_analysis.md ($(wc -l < "$TASKS_DIR/trajectory_analysis.md") lines)"
+  else
+    echo "Warning: No 'Agent Trial Results' comment found in $REPO#$PR_NUMBER"
+  fi
+fi
 
 # CPU count (macOS)
 CPUS="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
