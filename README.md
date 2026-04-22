@@ -17,8 +17,11 @@ Claude runs inside a locked-down container with read-only access to your workspa
 ```bash
 git clone <this-repo> && cd bench-press
 
-# Analyze a PR directly — extracts the latest Agent Trial Results comment automatically
-./run.sh "use GUIDE.md to review the task. The trial details are in /tasks/trajectory_analysis.md." \
+# Analyze a PR with the built-in trajectory-review prompt (most common)
+./run.sh --pr https://github.com/harbor-framework/terminal-bench-3/pull/166
+
+# Or pass a custom prompt (overrides the built-in)
+./run.sh "use GUIDE.md to review this, focus on cheat resistance" \
   --pr https://github.com/harbor-framework/terminal-bench-3/pull/166
 
 # Or run with a local task file
@@ -37,11 +40,19 @@ git clone <this-repo> && cd bench-press
 
 ### From a PR (recommended)
 
-Pass `--pr` with a terminal-bench PR URL. The script extracts the latest Agent Trial Results comment and makes it available at `/tasks/trajectory_analysis.md`:
+Pass `--pr` with a terminal-bench PR URL. The script pre-fetches the `/run` and `/cheat` result comments, the PR description and diff, and the five sticky CI bot comments (`static-checks`, `rubric-review`, `task-overview`, `task-validation`, `pr-status`) into `/tasks/` before Claude starts.
+
+With no prompt, the script uses a built-in trajectory-review prompt that tells Claude to follow `GUIDE.md`, download the trial artifacts, and produce its own analysis from scratch (rather than rubber-stamping the pre-fetched results summary):
 
 ```bash
-./run.sh "use GUIDE.md to review the task. Details are in /tasks/trajectory_analysis.md. \
-  Download the trajectories and analyze them." \
+./run.sh --pr https://github.com/harbor-framework/terminal-bench-3/pull/330
+```
+
+Pass your own prompt to override the default — useful when you want the fuller PR review that uses the pre-fetched CI comments and rubrics:
+
+```bash
+./run.sh "use GUIDE.md end-to-end: read ci/*.md, both rubrics, all trials, \
+  and write /tasks/review-summary.md" \
   --pr https://github.com/harbor-framework/terminal-bench-3/pull/330
 ```
 

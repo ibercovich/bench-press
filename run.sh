@@ -21,9 +21,21 @@ while [[ $# -gt 0 ]]; do
 done
 PROMPT="${PROMPT# }"  # trim leading space
 
+# Built-in prompt used when --pr is given with no explicit prompt. Matches the
+# trajectory-focused review flow (ignore broader PR context, download trials,
+# produce an independent analysis rather than rubber-stamping the pre-fetched
+# results summary).
+DEFAULT_PROMPT="use GUIDE.md to review the task described in the md mentioned below. do not look at the github PR, just focus on the guide and download the trajectories. Don't get stuck if you struggle to download the trajectories. The file with the details is /tasks/trajectory_analysis.md, ultrathink. Make your own full analysis, don't just tell me that trajectory_analysis.md is correct. Work it out from scratch"
+
 if [ -z "$PROMPT" ]; then
-  echo "Usage: ./run.sh \"your prompt here\" [--pr <github-pr-url>]"
-  exit 1
+  if [ -z "$PR_URL" ]; then
+    echo "Usage: ./run.sh [\"your prompt here\"] [--pr <github-pr-url>]"
+    echo ""
+    echo "  With --pr and no prompt, uses the built-in trajectory-review prompt."
+    exit 1
+  fi
+  PROMPT="$DEFAULT_PROMPT"
+  echo "No prompt given — using built-in trajectory-review prompt."
 fi
 
 # Build the container if needed
@@ -36,7 +48,7 @@ TASKS_DIR="$SCRIPT_DIR/tasks/$RUN_ID"
 mkdir -p "$TASKS_DIR"
 echo "Task directory: $TASKS_DIR"
 
-# If --pr was provided, extract the last "Agent Trial Results" comment
+# If --pr was provided, pre-fetch all PR metadata the in-container analysis needs
 if [ -n "$PR_URL" ]; then
   # Parse owner/repo and PR number from URL
   # Handles: https://github.com/owner/repo/pull/123
@@ -44,17 +56,44 @@ if [ -n "$PR_URL" ]; then
   REPO="$(echo "$PR_PATH" | cut -d/ -f1-2)"
   PR_NUMBER="$(echo "$PR_PATH" | cut -d/ -f4)"
 
-  echo "Fetching last Agent Trial Results from $REPO#$PR_NUMBER..."
-  COMMENT_BODY="$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
-    --paginate \
-    --jq '[.[] | select(.body | test("🧪 Agent Trial Results"))] | last | .body' 2>/dev/null || true)"
+  echo "Fetching PR metadata from $REPO#$PR_NUMBER..."
+  mkdir -p "$TASKS_DIR/ci"
 
-  if [ -n "$COMMENT_BODY" ]; then
-    echo "$COMMENT_BODY" > "$TASKS_DIR/trajectory_analysis.md"
-    echo "Saved trajectory_analysis.md ($(wc -l < "$TASKS_DIR/trajectory_analysis.md") lines)"
-  else
-    echo "Warning: No 'Agent Trial Results' comment found in $REPO#$PR_NUMBER"
-  fi
+  # Cache the full issue-comments payload once so downstream jq filters are cheap
+  COMMENTS_JSON="$TASKS_DIR/pr-comments.json"
+  gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate > "$COMMENTS_JSON" 2>/dev/null || echo '[]' > "$COMMENTS_JSON"
+
+  # PR description, diff, inline review comments
+  gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.body // ""' > "$TASKS_DIR/pr-description.md" 2>/dev/null || true
+  gh api "repos/$REPO/pulls/$PR_NUMBER" -H "Accept: application/vnd.github.v3.diff" > "$TASKS_DIR/pr-diff.patch" 2>/dev/null || true
+  gh api "repos/$REPO/pulls/$PR_NUMBER/comments" --paginate > "$TASKS_DIR/pr-review-comments.json" 2>/dev/null || echo '[]' > "$TASKS_DIR/pr-review-comments.json"
+
+  # Sticky CI bot comments — identified by the sticky-pull-request-comment HTML marker
+  for header in static-checks rubric-review task-overview task-validation pr-status; do
+    gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
+      --jq "[.[] | select(.body | contains(\"<!-- Sticky Pull Request Comment${header} -->\"))] | last | .body // \"\"" \
+      > "$TASKS_DIR/ci/${header}.md" 2>/dev/null || true
+  done
+
+  # /run results — Agent Trial Results, excluding the cheating variant
+  gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
+    --jq '[.[] | select(.body | test("Agent Trial Results")) | select(.body | test("Cheating") | not)] | last | .body // ""' \
+    > "$TASKS_DIR/trajectory_analysis.md" 2>/dev/null || true
+
+  # /cheat results
+  gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
+    --jq '[.[] | select(.body | test("Cheating Agent Trial Results"))] | last | .body // ""' \
+    > "$TASKS_DIR/cheat_results.md" 2>/dev/null || true
+
+  echo "Pre-fetched inputs:"
+  for f in trajectory_analysis.md cheat_results.md pr-description.md pr-diff.patch \
+           ci/static-checks.md ci/rubric-review.md ci/task-overview.md ci/task-validation.md ci/pr-status.md; do
+    if [ -s "$TASKS_DIR/$f" ]; then
+      printf "  ✓ %-28s (%s lines)\n" "$f" "$(wc -l < "$TASKS_DIR/$f" | tr -d ' ')"
+    else
+      printf "  · %-28s (empty)\n" "$f"
+    fi
+  done
 fi
 
 # CPU count (macOS)
