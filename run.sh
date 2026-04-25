@@ -21,41 +21,50 @@ while [[ $# -gt 0 ]]; do
 done
 PROMPT="${PROMPT# }"  # trim leading space
 
-# Built-in prompt used when --pr is given with no explicit prompt. Matches the
-# trajectory-focused review flow (ignore broader PR context, download trials,
-# produce an independent analysis rather than rubber-stamping the pre-fetched
-# results summary).
-DEFAULT_PROMPT="use GUIDE.md to review the task described in the md mentioned below. do not look at the github PR, just focus on the guide and download the trajectories. Don't get stuck if you struggle to download the trajectories. The file with the details is /tasks/trajectory_analysis.md, ultrathink. Make your own full analysis, don't just tell me that trajectory_analysis.md is correct. Work it out from scratch"
+# Parse PR identity early so the task directory and pre-fetch can both reuse it.
+if [ -n "$PR_URL" ]; then
+  PR_PATH="${PR_URL#https://github.com/}"
+  REPO="$(echo "$PR_PATH" | cut -d/ -f1-2)"
+  PR_NUMBER="$(echo "$PR_PATH" | cut -d/ -f4)"
+fi
+
+# Built-in prompt used when --pr is given with no explicit prompt. Drives the
+# full GUIDE.md review end-to-end (rubric, bloat review, failure taxonomy from
+# primary artifacts, full review-summary.md). Avoids rubber-stamping pre-fetched
+# summaries.
+DEFAULT_PROMPT="Full task review of this PR following GUIDE.md end-to-end. All pre-fetched inputs are in /tasks/ root (trajectory_analysis.md, cheat_results.md, pr-description.md, pr-diff.patch, ci/*.md). Download both rubrics (rubrics/task-implementation.toml and rubrics/trial-analysis.toml), the /run and /cheat trial artifacts, and the task files (instruction.md, task.toml, environment/, solution/, tests/). Apply the Instruction Bloat review from Step 3. Reconstruct the failure taxonomy from primary artifacts (per-trial result.json, ctrf.json, episode trajectories) rather than rubber-stamping pre-fetched summaries. Write /tasks/review-summary.md per the Step 5 template, including the Non-Expert Explainer. ultrathink."
 
 if [ -z "$PROMPT" ]; then
   if [ -z "$PR_URL" ]; then
-    echo "Usage: ./run.sh [\"your prompt here\"] [--pr <github-pr-url>]"
+    echo "Usage: ./run.sh --pr <github-pr-url>"
+    echo "       ./run.sh \"your prompt\" [--pr <github-pr-url>]"
     echo ""
-    echo "  With --pr and no prompt, uses the built-in trajectory-review prompt."
+    echo "  With --pr and no prompt, performs the full GUIDE.md task review."
     exit 1
   fi
   PROMPT="$DEFAULT_PROMPT"
-  echo "No prompt given — using built-in trajectory-review prompt."
+  echo "No prompt given — using built-in full-review prompt."
 fi
 
 # Build the container if needed
 echo "Building container..."
 docker build -q -t "$IMAGE_NAME" "$SCRIPT_DIR" > /dev/null
 
-# Unique task directory for this container run
-RUN_ID="run-$(date +%Y%m%d-%H%M%S)-$$"
-TASKS_DIR="$SCRIPT_DIR/tasks/$RUN_ID"
+# Task directory: when --pr is given, namespace under tasks/<owner>/<repo>/pr-<N>
+# so concurrent runs against different PRs don't collide and outputs survive
+# the container keyed by PR. The no-PR custom-prompt mode falls back to the
+# legacy timestamped layout.
+if [ -n "$PR_URL" ]; then
+  TASKS_DIR="$SCRIPT_DIR/tasks/$REPO/pr-$PR_NUMBER"
+else
+  RUN_ID="run-$(date +%Y%m%d-%H%M%S)-$$"
+  TASKS_DIR="$SCRIPT_DIR/tasks/$RUN_ID"
+fi
 mkdir -p "$TASKS_DIR"
 echo "Task directory: $TASKS_DIR"
 
 # If --pr was provided, pre-fetch all PR metadata the in-container analysis needs
 if [ -n "$PR_URL" ]; then
-  # Parse owner/repo and PR number from URL
-  # Handles: https://github.com/owner/repo/pull/123
-  PR_PATH="${PR_URL#https://github.com/}"
-  REPO="$(echo "$PR_PATH" | cut -d/ -f1-2)"
-  PR_NUMBER="$(echo "$PR_PATH" | cut -d/ -f4)"
-
   echo "Fetching PR metadata from $REPO#$PR_NUMBER..."
   mkdir -p "$TASKS_DIR/ci"
 
@@ -123,6 +132,7 @@ echo "Running Claude in sandbox (cpus=$CPUS, mem=8g)..."
 docker run --rm \
   --cpus="$CPUS" \
   --memory="8g" \
+  --mount type=tmpfs,destination=/workspace/tasks \
   -e ANTHROPIC_API_KEY="$CLAUDE_TOKEN" \
   -e GH_TOKEN="$GH_TOKEN" \
   -v "$SCRIPT_DIR:/workspace:ro" \

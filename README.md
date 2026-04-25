@@ -17,57 +17,53 @@ Claude runs inside a locked-down container with read-only access to your workspa
 ```bash
 git clone <this-repo> && cd bench-press
 
-# Analyze a PR with the built-in trajectory-review prompt (most common)
+# Full GUIDE.md task review of a PR — the only command you typically need
 ./run.sh --pr https://github.com/harbor-framework/terminal-bench-3/pull/166
-
-# Or pass a custom prompt (overrides the built-in)
-./run.sh "use GUIDE.md to review this, focus on cheat resistance" \
-  --pr https://github.com/harbor-framework/terminal-bench-3/pull/166
-
-# Or run with a local task file
-./run.sh "use GUIDE.md to analyze the task described in my-task.md"
 ```
+
+That's it. `--pr` triggers a complete review: rubric alignment, instruction-bloat check, per-trial failure taxonomy reconstructed from primary artifacts, and a `review-summary.md` written to the task directory.
+
+Concurrent runs against different PRs work in parallel — each PR has its own namespaced directory (see [File layout](#file-layout)).
 
 ## How it works
 
 1. **`run.sh`** builds the Docker image (if needed), extracts your Claude and GitHub tokens from macOS Keychain, and launches a container.
-2. If `--pr <url>` is provided, the script fetches the last comment containing "Agent Trial Results" from the PR (including collapsed `<details>` sections) and saves it as `/tasks/trajectory_analysis.md` inside the container.
+2. With `--pr <url>`, the script pre-fetches the `/run` and `/cheat` result comments, the PR description and diff, all PR comments, and the five sticky CI bot comments into a per-PR directory at `tasks/<owner>/<repo>/pr-<N>/`.
 3. Claude Code runs in `--dangerously-skip-permissions` mode inside the container — safe because the container is the sandbox.
-4. Your project directory is mounted **read-only** at `/workspace`. Each run gets its own writable directory at `/tasks` (persisted to `tasks/<run-id>/` on your host).
+4. The PR directory is bind-mounted at `/tasks` inside the container (writable; outputs survive container exit). The project root is mounted read-only at `/workspace` so the agent can read `GUIDE.md`; the host's `tasks/` history is hidden behind a tmpfs so the agent can't read prior runs by accident.
 5. Output streams through **`format-stream.py`** so you see thinking, tool calls, and responses in real time instead of raw JSON.
 
 ## Usage
 
-### From a PR (recommended)
-
-Pass `--pr` with a terminal-bench PR URL. The script pre-fetches the `/run` and `/cheat` result comments, the PR description and diff, and the five sticky CI bot comments (`static-checks`, `rubric-review`, `task-overview`, `task-validation`, `pr-status`) into `/tasks/` before Claude starts.
-
-With no prompt, the script uses a built-in trajectory-review prompt that tells Claude to follow `GUIDE.md`, download the trial artifacts, and produce its own analysis from scratch (rather than rubber-stamping the pre-fetched results summary):
+### From a PR (the common case)
 
 ```bash
 ./run.sh --pr https://github.com/harbor-framework/terminal-bench-3/pull/330
 ```
 
-Pass your own prompt to override the default — useful when you want the fuller PR review that uses the pre-fetched CI comments and rubrics:
+The built-in prompt drives the full GUIDE.md review end-to-end. No customization needed.
+
+### Custom prompt (advanced)
+
+If you want a narrower or different focus, pass a prompt before `--pr`:
 
 ```bash
-./run.sh "use GUIDE.md end-to-end: read ci/*.md, both rubrics, all trials, \
-  and write /tasks/review-summary.md" \
+./run.sh "Focus only on cheat-trial robustness. Skip the bloat review." \
   --pr https://github.com/harbor-framework/terminal-bench-3/pull/330
 ```
 
-### With local task files
+### With local task files (no PR)
 
-Place task definition `.md` files in the repo root alongside `GUIDE.md`. These are not checked into git — they're specific to your analysis instance.
+Place task `.md` files in the repo root and pass a prompt referencing them:
 
 ```bash
-# Download a task description from a terminal-bench PR
 gh api repos/harbor-framework/terminal-bench-3/contents/tasks/my-task/instruction.md \
   --jq '.content' | base64 -d > my-task.md
 
-# Run the analysis
 ./run.sh "use GUIDE.md to analyze the task described in my-task.md"
 ```
+
+This mode falls back to a timestamped `tasks/run-<timestamp>-<pid>/` directory.
 
 ## What's in the container
 
@@ -94,9 +90,14 @@ bench-press/
 ├── format-stream.py    # Filters stream-json output into readable terminal output
 ├── GUIDE.md            # Analysis methodology and replay guide
 ├── README.md           # This file
-└── tasks/              # Created at runtime, one subdirectory per run (gitignored)
-    └── run-YYYYMMDD-HHMMSS-PID/
+└── tasks/              # Created at runtime, gitignored
+    ├── <owner>/<repo>/pr-<N>/    # PR mode: namespaced per PR, persists across runs
+    │   ├── trajectory_analysis.md, cheat_results.md, ci/*.md, ...
+    │   └── review-summary.md     # Written by the agent
+    └── run-YYYYMMDD-HHMMSS-PID/  # Custom-prompt mode (no --pr): timestamped
 ```
+
+Re-running the same PR refreshes the pre-fetched snapshot in place. Outputs from earlier runs (e.g. `review-summary.md`) survive unless the agent overwrites them.
 
 ## Output format
 
