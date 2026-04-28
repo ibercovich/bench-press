@@ -174,9 +174,9 @@ if [ -s "$TASKS_DIR/review-summary.md" ]; then
 fi
 
 # If --review was passed, post a REQUEST_CHANGES review to the PR using
-# issues-found.md as the body, with review-summary.md inlined as a collapsed
-# <details> block (GitHub's REST API doesn't support file attachments on
-# reviews; inlining is the cleanest equivalent).
+# issues-found.md as the body. The full review-summary.md is intentionally
+# not inlined — it stays on disk for reference and avoids GitHub's review
+# body size limit.
 if [ "$SUBMIT_REVIEW" = "1" ]; then
   if [ -z "$PR_URL" ]; then
     echo "--review requires --pr; skipping review submission."
@@ -190,18 +190,6 @@ if [ "$SUBMIT_REVIEW" = "1" ]; then
     BODY="$PREAMBLE
 
 $ISSUES"
-
-    if [ -s "$TASKS_DIR/review-summary.md" ]; then
-      SUMMARY="$(cat "$TASKS_DIR/review-summary.md")"
-      BODY="$BODY
-
-<details>
-<summary>Full review summary (review-summary.md)</summary>
-
-$SUMMARY
-
-</details>"
-    fi
 
     if REVIEW_URL=$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" \
         --method POST \
