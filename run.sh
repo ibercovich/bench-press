@@ -151,3 +151,19 @@ docker run --rm \
   "$IMAGE_NAME" \
   -p --dangerously-skip-permissions --verbose --output-format stream-json "$PROMPT" \
   | python3 "$SCRIPT_DIR/format-stream.py"
+
+# Post-process: if the agent wrote review-summary.md, extract the
+# "## Issues Found" section verbatim into a sibling issues-found.md
+# so it can be referenced or posted standalone.
+if [ -s "$TASKS_DIR/review-summary.md" ]; then
+  awk '
+    /^## Issues Found/ { flag = 1 }
+    /^## / && flag && !/^## Issues Found/ { exit }
+    flag
+  ' "$TASKS_DIR/review-summary.md" > "$TASKS_DIR/issues-found.md"
+  if [ -s "$TASKS_DIR/issues-found.md" ]; then
+    echo "Extracted Issues Found section → $TASKS_DIR/issues-found.md"
+  else
+    rm -f "$TASKS_DIR/issues-found.md"
+  fi
+fi
