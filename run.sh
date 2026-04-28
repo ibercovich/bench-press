@@ -23,9 +23,16 @@ PROMPT="${PROMPT# }"  # trim leading space
 
 # Parse PR identity early so the task directory and pre-fetch can both reuse it.
 if [ -n "$PR_URL" ]; then
+  # Strip URL fragments (#issuecomment-...) and query strings before splitting,
+  # so a comment-anchored or files-tab URL doesn't pollute REPO / PR_NUMBER.
+  PR_URL="${PR_URL%%#*}"
+  PR_URL="${PR_URL%%\?*}"
   PR_PATH="${PR_URL#https://github.com/}"
   REPO="$(echo "$PR_PATH" | cut -d/ -f1-2)"
   PR_NUMBER="$(echo "$PR_PATH" | cut -d/ -f4)"
+  # Belt: trim PR_NUMBER at the first non-digit, so path suffixes like
+  # /files, /commits, or trailing slashes also can't leak in.
+  PR_NUMBER="${PR_NUMBER%%[!0-9]*}"
 fi
 
 # Built-in prompt used when --pr is given with no explicit prompt. Drives the
