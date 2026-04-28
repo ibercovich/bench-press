@@ -4,14 +4,19 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 IMAGE_NAME="claude-sandbox"
 
-# Parse arguments: extract --pr flag, everything else is the prompt
+# Parse arguments: extract --pr and --review flags; everything else is the prompt
 PROMPT=""
 PR_URL=""
+SUBMIT_REVIEW=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --pr)
       PR_URL="$2"
       shift 2
+      ;;
+    --review)
+      SUBMIT_REVIEW=1
+      shift
       ;;
     *)
       PROMPT="$PROMPT $1"
@@ -165,5 +170,47 @@ if [ -s "$TASKS_DIR/review-summary.md" ]; then
     echo "Extracted Issues Found section → $TASKS_DIR/issues-found.md"
   else
     rm -f "$TASKS_DIR/issues-found.md"
+  fi
+fi
+
+# If --review was passed, post a REQUEST_CHANGES review to the PR using
+# issues-found.md as the body, with review-summary.md inlined as a collapsed
+# <details> block (GitHub's REST API doesn't support file attachments on
+# reviews; inlining is the cleanest equivalent).
+if [ "$SUBMIT_REVIEW" = "1" ]; then
+  if [ -z "$PR_URL" ]; then
+    echo "--review requires --pr; skipping review submission."
+  elif [ ! -s "$TASKS_DIR/issues-found.md" ]; then
+    echo "--review: issues-found.md is empty or missing; skipping review submission."
+  else
+    echo "Submitting REQUEST_CHANGES review to $REPO#$PR_NUMBER..."
+
+    PREAMBLE="This is an automatic review. The author might disagree with some of the feedback."
+    ISSUES="$(cat "$TASKS_DIR/issues-found.md")"
+    BODY="$PREAMBLE
+
+$ISSUES"
+
+    if [ -s "$TASKS_DIR/review-summary.md" ]; then
+      SUMMARY="$(cat "$TASKS_DIR/review-summary.md")"
+      BODY="$BODY
+
+<details>
+<summary>Full review summary (review-summary.md)</summary>
+
+$SUMMARY
+
+</details>"
+    fi
+
+    if REVIEW_URL=$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" \
+        --method POST \
+        -f event="REQUEST_CHANGES" \
+        -f body="$BODY" \
+        --jq '.html_url' 2>&1); then
+      echo "Review posted: $REVIEW_URL"
+    else
+      echo "Warning: review submission failed: $REVIEW_URL"
+    fi
   fi
 fi

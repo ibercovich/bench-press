@@ -43,6 +43,16 @@ Concurrent runs against different PRs work in parallel — each PR has its own n
 
 The built-in prompt drives the full GUIDE.md review end-to-end. No customization needed.
 
+### Submit a review automatically
+
+Add `--review` to post a `REQUEST_CHANGES` review to the PR after the analysis finishes. The review body uses `issues-found.md` (extracted from `## Issues Found`) and inlines the full `review-summary.md` in a collapsed `<details>` block.
+
+```bash
+./run.sh --review --pr https://github.com/harbor-framework/terminal-bench-3/pull/330
+```
+
+The review is prefixed with: *"This is an automatic review. The author might disagree with some of the feedback."* If `issues-found.md` is empty or missing, no review is submitted (no findings = nothing to request changes on). Posts under the GitHub identity associated with your local `gh auth`.
+
 ### Custom prompt (advanced)
 
 If you want a narrower or different focus, pass a prompt before `--pr`:
