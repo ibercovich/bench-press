@@ -248,7 +248,9 @@ Aggregate findings into a summary:
 
 ### Step 5: Write the review summary
 
-Produce `/tasks/review-summary.md` with the structure below. Keep every section — empty sections make it obvious nothing was found (which is itself a signal):
+Produce `/tasks/review-summary.md` with the structure below. Keep every section — empty sections make it obvious nothing was found (which is itself a signal).
+
+**The H2 headings (`## …`) are parse anchors for downstream tooling — use them verbatim.** Don't rename, paraphrase, merge sections, or add trailing punctuation. `## Issues Found` in particular is extracted into a sibling `issues-found.md` after the run; renaming it to `## Findings` or `## Open Issues` will silently break that extraction. Subsection H3s (`### …`) are free-form.
 
 ```markdown
 # Task Review: <task-name>
