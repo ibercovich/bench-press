@@ -8,9 +8,20 @@ Claude runs inside a locked-down container with read-only access to your workspa
 
 - macOS
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/)
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) logged in (`claude` CLI authenticated)
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) logged in (`claude` CLI authenticated) **or** an `ANTHROPIC_API_KEY` in `<repo>/.env`
 - [GitHub CLI](https://cli.github.com/) logged in (`gh auth login`)
 - Python 3
+
+## Credentials
+
+`run.sh` resolves the Anthropic API key in this order:
+
+1. **`.env` in the repo root** — `ANTHROPIC_API_KEY=sk-…` on its own line. Long-lived; preferred for scheduled or unattended runs.
+2. **macOS Keychain** — the OAuth token from your local Claude Code CLI. Zero config, but the OAuth token expires periodically.
+
+If neither resolves, the script exits with an error.
+
+`GH_TOKEN` is taken from your `gh auth login` session. Posting reviews via `--review` requires that token to have write scope on the target repository.
 
 ## Quick start
 
@@ -41,7 +52,9 @@ Concurrent runs against different PRs work in parallel — each PR has its own n
 ./run.sh --pr https://github.com/harbor-framework/terminal-bench-3/pull/330
 ```
 
-The built-in prompt drives the full GUIDE.md review end-to-end. No customization needed.
+The built-in prompt drives the full GUIDE.md review end-to-end. No customization needed. URL fragments (`#issuecomment-…`), query strings, and path suffixes (`/files`, `/commits`) are stripped automatically — paste copy-from-browser URLs without scrubbing.
+
+After the run completes, the script also extracts the `## Issues Found` section from `review-summary.md` into a sibling `issues-found.md` (always, regardless of `--review`).
 
 ### Submit a review automatically
 
@@ -83,6 +96,8 @@ This mode falls back to a timestamped `tasks/run-<timestamp>-<pid>/` directory.
 | `gh` | GitHub CLI (authenticated via `GH_TOKEN`) |
 | `git` | Version control |
 | `curl` | HTTP requests |
+| `jq` | JSON parsing for trial `result.json` / `ctrf.json` |
+| `python3` | Available for in-container scripting (parsing, math, plotting) |
 | Node.js 22 | Claude Code runtime |
 
 ## Container resources
@@ -100,30 +115,62 @@ bench-press/
 ├── format-stream.py    # Filters stream-json output into readable terminal output
 ├── GUIDE.md            # Analysis methodology and replay guide
 ├── README.md           # This file
+├── .env                # (optional, gitignored) ANTHROPIC_API_KEY=sk-...
 └── tasks/              # Created at runtime, gitignored
-    ├── <owner>/<repo>/pr-<N>/    # PR mode: namespaced per PR, persists across runs
-    │   ├── trajectory_analysis.md, cheat_results.md, ci/*.md, ...
-    │   └── review-summary.md     # Written by the agent
-    └── run-YYYYMMDD-HHMMSS-PID/  # Custom-prompt mode (no --pr): timestamped
+    ├── <owner>/<repo>/pr-<N>/        # PR mode: namespaced per PR, persists across runs
+    │   ├── trajectory_analysis.md    # /run results comment       (pre-fetched)
+    │   ├── cheat_results.md          # /cheat results comment     (pre-fetched)
+    │   ├── pr-description.md         # PR body                    (pre-fetched)
+    │   ├── pr-diff.patch             # full unified diff          (pre-fetched)
+    │   ├── pr-comments.json          # all issue comments, raw    (pre-fetched)
+    │   ├── pr-review-comments.json   # all inline review comments (pre-fetched)
+    │   ├── ci/                       # five sticky CI bot comments (pre-fetched)
+    │   │   ├── static-checks.md
+    │   │   ├── rubric-review.md
+    │   │   ├── task-overview.md
+    │   │   ├── task-validation.md
+    │   │   └── pr-status.md
+    │   ├── review-summary.md         # written by the agent
+    │   └── issues-found.md           # auto-extracted from review-summary's `## Issues Found`
+    └── run-YYYYMMDD-HHMMSS-PID/      # Custom-prompt mode (no --pr): timestamped
 ```
 
-Re-running the same PR refreshes the pre-fetched snapshot in place. Outputs from earlier runs (e.g. `review-summary.md`) survive unless the agent overwrites them.
+Re-running the same PR refreshes the pre-fetched snapshot in place. Outputs from earlier runs (e.g. `review-summary.md`, `issues-found.md`) survive unless the agent overwrites them.
 
 ## Output format
 
-The stream filter shows:
+A typical `--pr` run looks roughly like:
 
 ```
+Building container...
+Task directory: /…/tasks/harbor-framework/terminal-bench-3/pr-330
+Fetching PR metadata from harbor-framework/terminal-bench-3#330...
+Pre-fetched inputs:
+  ✓ trajectory_analysis.md       (207 lines)
+  ✓ cheat_results.md             (117 lines)
+  ✓ pr-description.md             (25 lines)
+  ✓ pr-diff.patch              (1,615 lines)
+  ✓ ci/static-checks.md           (18 lines)
+  ✓ ci/rubric-review.md           (53 lines)
+  ✓ ci/task-overview.md          (144 lines)
+  ✓ ci/task-validation.md         (22 lines)
+  ✓ ci/pr-status.md                (9 lines)
+Running Claude in sandbox (cpus=14, mem=8g)...
 [init] model=claude-sonnet-4-6 mode=bypassPermissions
-💭 Let me start by reading the guide and task file...
-
+💭 Let me start by reading GUIDE.md and the pre-fetched inputs.
 [tool] Read: /workspace/GUIDE.md
-[tool] Read: /workspace/my-task.md
-Here's my analysis of the task...
-[tool] Bash: gh run download 12345 --repo harbor-framework/terminal-bench-3 ...
-[tool] WebFetch: https://...
+[tool] Read: /tasks/trajectory_analysis.md
+…
+[tool] Write: /tasks/review-summary.md
+[done] 46 turns, 733.2s, $2.0985
+Extracted Issues Found section → /…/tasks/.../pr-330/issues-found.md
+```
 
-[done] 12 turns, 45.3s, $0.0521
+With `--review`, a final line shows the posted review URL:
+
+```
+Submitting REQUEST_CHANGES review to harbor-framework/terminal-bench-3#330...
+Review posted: https://github.com/harbor-framework/terminal-bench-3/pull/330#pullrequestreview-...
 ```
 
 ## Security notes
