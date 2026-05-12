@@ -38,6 +38,21 @@ if [ -n "$PR_URL" ]; then
   # Belt: trim PR_NUMBER at the first non-digit, so path suffixes like
   # /files, /commits, or trailing slashes also can't leak in.
   PR_NUMBER="${PR_NUMBER%%[!0-9]*}"
+
+  # Validate the PR exists before any expensive setup. Without this check, a
+  # bad URL silently produces empty pre-fetched files, the container launches
+  # against nothing to analyze, and the agent can spin indefinitely trying to
+  # make sense of it.
+  if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+    echo "Error: could not extract a PR number from URL: $PR_URL"
+    echo "Expected form: https://github.com/<owner>/<repo>/pull/<N>"
+    exit 1
+  fi
+  if ! gh api "repos/$REPO/pulls/$PR_NUMBER" --silent 2>/dev/null; then
+    echo "Error: PR not found or inaccessible: https://github.com/$REPO/pull/$PR_NUMBER"
+    echo "Check the URL, the repository name, and your gh auth scopes."
+    exit 1
+  fi
 fi
 
 # Built-in prompt used when --pr is given with no explicit prompt. Drives the
