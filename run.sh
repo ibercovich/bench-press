@@ -172,25 +172,32 @@ docker run --rm \
   -p --dangerously-skip-permissions --verbose --output-format stream-json "$PROMPT" \
   | python3 "$SCRIPT_DIR/format-stream.py"
 
-# Post-process: if the agent wrote review-summary.md, extract the
-# "## Issues Found" section verbatim into a sibling issues-found.md
-# so it can be referenced or posted standalone.
-if [ -s "$TASKS_DIR/review-summary.md" ]; then
-  awk '
-    /^## Issues Found/ { flag = 1 }
-    /^## / && flag && !/^## Issues Found/ { exit }
+# Post-process: extract specific H2 sections of review-summary.md into
+# sibling files. These H2 headings are parse anchors per GUIDE.md Step 5.
+extract_section() {
+  local heading="$1"
+  local out="$2"
+  awk -v h="^## ${heading}" '
+    $0 ~ h { flag = 1 }
+    /^## / && flag && $0 !~ h { exit }
     flag
-  ' "$TASKS_DIR/review-summary.md" > "$TASKS_DIR/issues-found.md"
-  if [ -s "$TASKS_DIR/issues-found.md" ]; then
-    echo "Extracted Issues Found section → $TASKS_DIR/issues-found.md"
+  ' "$TASKS_DIR/review-summary.md" > "$out"
+  if [ -s "$out" ]; then
+    echo "Extracted '$heading' → $out"
   else
-    rm -f "$TASKS_DIR/issues-found.md"
+    rm -f "$out"
   fi
+}
+
+if [ -s "$TASKS_DIR/review-summary.md" ]; then
+  extract_section "Issues Found" "$TASKS_DIR/issues-found.md"
+  extract_section "Natural Difficulty Extensions" "$TASKS_DIR/natural-difficulty-extensions.md"
 fi
 
 # If --review was passed, post a REQUEST_CHANGES review to the PR using
-# issues-found.md as the body. The full review-summary.md is intentionally
-# not inlined — it stays on disk for reference and avoids GitHub's review
+# issues-found.md as the body. If the agent populated the Natural Difficulty
+# Extensions section, append it after the issues. The full review-summary.md
+# stays on disk for reference but is not inlined — avoids GitHub's review
 # body size limit.
 if [ "$SUBMIT_REVIEW" = "1" ]; then
   if [ -z "$PR_URL" ]; then
@@ -205,6 +212,13 @@ if [ "$SUBMIT_REVIEW" = "1" ]; then
     BODY="$PREAMBLE
 
 $ISSUES"
+
+    if [ -s "$TASKS_DIR/natural-difficulty-extensions.md" ]; then
+      EXTENSIONS="$(cat "$TASKS_DIR/natural-difficulty-extensions.md")"
+      BODY="$BODY
+
+$EXTENSIONS"
+    fi
 
     if REVIEW_URL=$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" \
         --method POST \

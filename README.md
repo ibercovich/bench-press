@@ -58,7 +58,7 @@ After the run completes, the script also extracts the `## Issues Found` section 
 
 ### Submit a review automatically
 
-Add `--review` to post a `REQUEST_CHANGES` review to the PR after the analysis finishes. The review body is `issues-found.md` (extracted from `## Issues Found`), prefixed with *"This is an automatic review. The author might disagree with some of the feedback."*
+Add `--review` to post a `REQUEST_CHANGES` review to the PR after the analysis finishes. The review body is `issues-found.md` (extracted from `## Issues Found`), prefixed with *"This is an automatic review. The author might disagree with some of the feedback."* If the agent populated the `## Natural Difficulty Extensions` section, that's appended after the issues.
 
 ```bash
 ./run.sh --review --pr https://github.com/harbor-framework/terminal-bench-3/pull/330
@@ -130,8 +130,9 @@ bench-press/
     │   │   ├── task-overview.md
     │   │   ├── task-validation.md
     │   │   └── pr-status.md
-    │   ├── review-summary.md         # written by the agent
-    │   └── issues-found.md           # auto-extracted from review-summary's `## Issues Found`
+    │   ├── review-summary.md                 # written by the agent
+    │   ├── issues-found.md                    # auto-extracted from `## Issues Found`
+    │   └── natural-difficulty-extensions.md   # auto-extracted from `## Natural Difficulty Extensions`
     └── run-YYYYMMDD-HHMMSS-PID/      # Custom-prompt mode (no --pr): timestamped
 ```
 
