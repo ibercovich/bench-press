@@ -154,12 +154,22 @@ if [ -f "$SCRIPT_DIR/.env" ]; then
   [ -n "$ENV_MODEL" ] && CLAUDE_MODEL="$ENV_MODEL"
   [ -n "$ENV_EFFORT" ] && CLAUDE_EFFORT="$ENV_EFFORT"
 fi
-if [ -z "$CLAUDE_TOKEN" ]; then
+# Fall back to the OAuth token from `claude` CLI login. On Linux / WSL it
+# lives at ~/.claude/.credentials.json; on macOS it's in the Keychain.
+# Try the file first (cross-platform), then the Keychain (macOS-only).
+if [ -z "$CLAUDE_TOKEN" ] && [ -f "$HOME/.claude/.credentials.json" ]; then
+  CLAUDE_TOKEN="$(python3 -c "import json; print(json.load(open('$HOME/.claude/.credentials.json')).get('claudeAiOauth',{}).get('accessToken',''))" 2>/dev/null || true)"
+fi
+
+if [ -z "$CLAUDE_TOKEN" ] && command -v security >/dev/null 2>&1; then
   CLAUDE_CREDS="$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null || true)"
   if [ -n "$CLAUDE_CREDS" ]; then
-    CLAUDE_TOKEN="$(echo "$CLAUDE_CREDS" | python3 -c "import sys,json; print(json.load(sys.stdin)['claudeAiOauth']['accessToken'])")"
-  else
-    cat >&2 <<EOF
+    CLAUDE_TOKEN="$(echo "$CLAUDE_CREDS" | python3 -c "import json,sys; print(json.load(sys.stdin).get('claudeAiOauth',{}).get('accessToken',''))" 2>/dev/null || true)"
+  fi
+fi
+
+if [ -z "$CLAUDE_TOKEN" ]; then
+  cat >&2 <<EOF
 Error: No Anthropic API key found.
 
 Set up credentials one of these ways:
@@ -169,13 +179,14 @@ Set up credentials one of these ways:
        # then edit .env and set ANTHROPIC_API_KEY=sk-ant-api03-...
      Get a key at https://console.anthropic.com/settings/keys
 
-  2. macOS Keychain (OAuth token from \`claude\` CLI; expires periodically):
+  2. OAuth token from \`claude\` CLI login (expires periodically):
        claude   # log in via the browser flow it opens
+     Stored in the macOS Keychain on Darwin or ~/.claude/.credentials.json
+     on Linux / WSL — run.sh checks both.
 
 See the "Credentials" section in README.md for details.
 EOF
-    exit 1
-  fi
+  exit 1
 fi
 
 echo "Running Claude in sandbox (cpus=$CPUS, mem=8g, model=$CLAUDE_MODEL, effort=$CLAUDE_EFFORT)..."

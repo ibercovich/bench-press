@@ -25,7 +25,7 @@ Claude runs inside a locked-down container with read-only access to your workspa
 
    `.env` itself is gitignored so it never gets committed.
 
-2. **macOS Keychain** — the OAuth token from your local `claude` CLI login. Zero config, but the OAuth token expires periodically.
+2. **OAuth token from `claude` CLI login** — zero config, but expires periodically. Stored in the macOS Keychain on Darwin or `~/.claude/.credentials.json` on Linux / WSL. `run.sh` checks both, so the same script works on either platform.
 
 If neither resolves, the script exits with a multi-line error that names the exact paths and the URL where you can get a key.
 
