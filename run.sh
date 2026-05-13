@@ -150,7 +150,21 @@ if [ -z "$CLAUDE_TOKEN" ]; then
   if [ -n "$CLAUDE_CREDS" ]; then
     CLAUDE_TOKEN="$(echo "$CLAUDE_CREDS" | python3 -c "import sys,json; print(json.load(sys.stdin)['claudeAiOauth']['accessToken'])")"
   else
-    echo "Error: No API key found. Add ANTHROPIC_API_KEY to .env or log in to Claude Code."
+    cat >&2 <<EOF
+Error: No Anthropic API key found.
+
+Set up credentials one of these ways:
+
+  1. (Recommended) Long-lived API key in $SCRIPT_DIR/.env:
+       cp $SCRIPT_DIR/.env.example $SCRIPT_DIR/.env
+       # then edit .env and set ANTHROPIC_API_KEY=sk-ant-api03-...
+     Get a key at https://console.anthropic.com/settings/keys
+
+  2. macOS Keychain (OAuth token from \`claude\` CLI; expires periodically):
+       claude   # log in via the browser flow it opens
+
+See the "Credentials" section in README.md for details.
+EOF
     exit 1
   fi
 fi

@@ -16,10 +16,18 @@ Claude runs inside a locked-down container with read-only access to your workspa
 
 `run.sh` resolves the Anthropic API key in this order:
 
-1. **`.env` in the repo root** — `ANTHROPIC_API_KEY=sk-…` on its own line. Long-lived; preferred for scheduled or unattended runs.
-2. **macOS Keychain** — the OAuth token from your local Claude Code CLI. Zero config, but the OAuth token expires periodically.
+1. **`.env` in the repo root** — `ANTHROPIC_API_KEY=sk-…` on its own line. Long-lived; preferred for scheduled or unattended runs. The repo ships a `.env.example` template:
 
-If neither resolves, the script exits with an error.
+   ```bash
+   cp .env.example .env
+   # then edit .env and paste your key from https://console.anthropic.com/settings/keys
+   ```
+
+   `.env` itself is gitignored so it never gets committed.
+
+2. **macOS Keychain** — the OAuth token from your local `claude` CLI login. Zero config, but the OAuth token expires periodically.
+
+If neither resolves, the script exits with a multi-line error that names the exact paths and the URL where you can get a key.
 
 `GH_TOKEN` is taken from your `gh auth login` session. Posting reviews via `--review` requires that token to have write scope on the target repository.
 
