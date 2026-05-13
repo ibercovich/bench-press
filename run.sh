@@ -141,9 +141,18 @@ if [ -z "$GH_TOKEN" ]; then
   echo "Warning: Could not retrieve GitHub token. gh will not be authenticated."
 fi
 
-# Claude API key: prefer .env file (long-lived), fall back to Keychain OAuth token (may expire)
+# Claude Code model + effort, with defaults that can be overridden in .env.
+CLAUDE_MODEL="claude-opus-4-7"
+CLAUDE_EFFORT="xhigh"
+
+# Claude API key: prefer .env file (long-lived), fall back to Keychain OAuth token (may expire).
+# .env can also override CLAUDE_MODEL / CLAUDE_EFFORT.
 if [ -f "$SCRIPT_DIR/.env" ]; then
   CLAUDE_TOKEN="$(grep '^ANTHROPIC_API_KEY=' "$SCRIPT_DIR/.env" | cut -d= -f2-)"
+  ENV_MODEL="$(grep '^CLAUDE_MODEL=' "$SCRIPT_DIR/.env" | cut -d= -f2-)"
+  ENV_EFFORT="$(grep '^CLAUDE_EFFORT=' "$SCRIPT_DIR/.env" | cut -d= -f2-)"
+  [ -n "$ENV_MODEL" ] && CLAUDE_MODEL="$ENV_MODEL"
+  [ -n "$ENV_EFFORT" ] && CLAUDE_EFFORT="$ENV_EFFORT"
 fi
 if [ -z "$CLAUDE_TOKEN" ]; then
   CLAUDE_CREDS="$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null || true)"
@@ -169,7 +178,7 @@ EOF
   fi
 fi
 
-echo "Running Claude in sandbox (cpus=$CPUS, mem=8g)..."
+echo "Running Claude in sandbox (cpus=$CPUS, mem=8g, model=$CLAUDE_MODEL, effort=$CLAUDE_EFFORT)..."
 docker run --rm \
   --cpus="$CPUS" \
   --memory="8g" \
@@ -178,12 +187,11 @@ docker run --rm \
   -e GH_TOKEN="$GH_TOKEN" \
   -v "$SCRIPT_DIR:/workspace:ro" \
   -v "$TASKS_DIR:/tasks:rw" \
-  -v "$HOME/.claude.json:/home/node/.claude.json:ro" \
-  -v "$HOME/.claude/settings.json:/home/node/.claude/settings.json:ro" \
-  -v "$HOME/.claude/settings.local.json:/home/node/.claude/settings.local.json:ro" \
   -v "$HOME/.gitconfig:/home/node/.gitconfig:ro" \
   "$IMAGE_NAME" \
-  -p --dangerously-skip-permissions --verbose --output-format stream-json "$PROMPT" \
+  -p --dangerously-skip-permissions --verbose --output-format stream-json \
+  --model "$CLAUDE_MODEL" --effort "$CLAUDE_EFFORT" \
+  "$PROMPT" \
   | python3 "$SCRIPT_DIR/format-stream.py"
 
 # Post-process: extract specific H2 sections of review-summary.md into

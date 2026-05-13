@@ -31,6 +31,17 @@ If neither resolves, the script exits with a multi-line error that names the exa
 
 `GH_TOKEN` is taken from your `gh auth login` session. Posting reviews via `--review` requires that token to have write scope on the target repository.
 
+### Model and effort
+
+`.env` also controls the model and reasoning effort used inside the container:
+
+```
+CLAUDE_MODEL=claude-opus-4-7   # any model ID claude CLI accepts
+CLAUDE_EFFORT=xhigh            # low / medium / high / xhigh / max (Opus 4.7); other models fall back to high
+```
+
+Defaults to `claude-opus-4-7` + `xhigh` if either is missing. No host `~/.claude*` files are bind-mounted into the container, so model and effort are the only Claude Code knobs that carry over.
+
 ## Quick start
 
 ```bash
@@ -49,7 +60,7 @@ Concurrent runs against different PRs work in parallel — each PR has its own n
 1. **`run.sh`** builds the Docker image (if needed), extracts your Claude and GitHub tokens from macOS Keychain, and launches a container.
 2. With `--pr <url>`, the script pre-fetches the `/run` and `/cheat` result comments, the PR description and diff, all PR comments, and the five sticky CI bot comments into a per-PR directory at `tasks/<owner>/<repo>/pr-<N>/`.
 3. Claude Code runs in `--dangerously-skip-permissions` mode inside the container — safe because the container is the sandbox.
-4. The PR directory is bind-mounted at `/tasks` inside the container (writable; outputs survive container exit). The project root is mounted read-only at `/workspace` so the agent can read `GUIDE.md`; the host's `tasks/` history is hidden behind a tmpfs so the agent can't read prior runs by accident.
+4. The PR directory is bind-mounted at `/tasks` inside the container (writable; outputs survive container exit). The project root is mounted read-only at `/workspace` so the agent can read `GUIDE.md`; the host's `tasks/` history is hidden behind a tmpfs so the agent can't read prior runs by accident. Your `~/.gitconfig` is bind-mounted so any in-container git activity is attributed to you.
 5. Output streams through **`format-stream.py`** so you see thinking, tool calls, and responses in real time instead of raw JSON.
 
 ## Usage
