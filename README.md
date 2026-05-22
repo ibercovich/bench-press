@@ -79,6 +79,7 @@ After the run completes, the script also extracts the `## Issues Found` section 
 
 Add `--review` to post a `REQUEST_CHANGES` review to the PR after the analysis finishes. The review body is composed in this order, prefixed with *"This is an automatic review. The author might disagree with some of the feedback."*:
 
+0. **Agentic-task warning** (only if the agentic check failed) — a prominent blockquote at the top recommending the reviewer consider closing the PR rather than iterating on it. See [GUIDE.md → Agentic task check](GUIDE.md) for criteria.
 1. `issues-found.md` (extracted from `## Issues Found`) — current-round blockers
 2. `unaddressed-prior-feedback.md` (extracted from `## Unaddressed Prior Feedback`) — prior reviewer comments the author hasn't addressed yet (only if non-empty)
 3. `natural-difficulty-extensions.md` (extracted from `## Natural Difficulty Extensions`) — forward-looking suggestions (only if non-empty)
@@ -87,7 +88,7 @@ Add `--review` to post a `REQUEST_CHANGES` review to the PR after the analysis f
 ./run.sh --review --pr https://github.com/harbor-framework/terminal-bench-3/pull/330
 ```
 
-If `issues-found.md` is empty or missing, no review is submitted. The full `review-summary.md` stays on disk in the PR's task directory for reference but is not inlined into the review (avoids GitHub's body-size limit). Posts under the GitHub identity associated with your local `gh auth`.
+If `issues-found.md` is empty *and* the agentic check passed, no review is submitted. If the agentic check failed, the review posts even when there are no concrete issues — the close-PR recommendation is the body. The full `review-summary.md` stays on disk in the PR's task directory for reference but is not inlined into the review (avoids GitHub's body-size limit). Posts under the GitHub identity associated with your local `gh auth`.
 
 ### Custom prompt (advanced)
 
@@ -156,6 +157,7 @@ bench-press/
     │   │   ├── task-validation.md
     │   │   └── pr-status.md
     │   ├── review-summary.md                 # written by the agent
+    │   ├── agentic-check.md                   # auto-extracted from `## Agentic Task Check`
     │   ├── issues-found.md                    # auto-extracted from `## Issues Found`
     │   ├── unaddressed-prior-feedback.md      # auto-extracted from `## Unaddressed Prior Feedback`
     │   └── natural-difficulty-extensions.md   # auto-extracted from `## Natural Difficulty Extensions`
