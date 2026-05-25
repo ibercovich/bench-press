@@ -77,7 +77,7 @@ After the run completes, the script also extracts the `## Issues Found` section 
 
 ### Submit a review automatically
 
-Add `--review` to post a `REQUEST_CHANGES` review to the PR after the analysis finishes. The review body is composed in this order, prefixed with *"This is an automatic review. The author might disagree with some of the feedback."*:
+Add `--review` to post a `REQUEST_CHANGES` review to the PR after the analysis finishes. The review body is composed in this order, prefixed with a short preamble that explains the review is automated, asks the author to accept-or-reject each point, and links to the [task-quality guide](https://github.com/harbor-framework/terminal-bench-3/discussions/224) (see `PREAMBLE` in `run.sh` for the exact text):
 
 0. **Agentic-task warning** (only if the agentic check failed) — a prominent blockquote at the top recommending the reviewer consider closing the PR rather than iterating on it. See [GUIDE.md → Agentic task check](GUIDE.md) for criteria.
 1. `issues-found.md` (extracted from `## Issues Found`) — current-round blockers
