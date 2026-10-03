@@ -4,19 +4,49 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 IMAGE_NAME="claude-sandbox"
 
-# Parse arguments: extract --pr and --review flags; everything else is the prompt
+# Parse arguments: extract --pr, --review, and --engine flags; everything else
+# is the prompt
 PROMPT=""
 PR_URL=""
 SUBMIT_REVIEW=0
+ENGINE="claude"
+
+# Keep the run's identity visible even if setup, the agent, or post-processing
+# fails. Register before parsing so early exits also print the supplied PR.
+print_run_reference() {
+  local exit_status=$?
+  printf '\nRun ended (exit code %s).\n' "$exit_status"
+  if [ -n "${TASKS_DIR:-}" ]; then
+    printf 'Task directory: %s\n' "$TASKS_DIR"
+  fi
+  printf 'PR: %s\n' "${PR_URL:-none (no --pr supplied)}"
+}
+trap print_run_reference EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --pr)
+      if [ "$#" -lt 2 ]; then
+        echo "Error: --pr requires a GitHub PR URL." >&2
+        exit 1
+      fi
       PR_URL="$2"
       shift 2
       ;;
     --review)
       SUBMIT_REVIEW=1
       shift
+      ;;
+    --engine)
+      if [ "$#" -lt 2 ]; then
+        echo "Error: --engine requires 'claude' or 'codex'." >&2
+        exit 1
+      fi
+      ENGINE="$2"
+      shift 2
       ;;
     *)
       PROMPT="$PROMPT $1"
@@ -25,6 +55,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 PROMPT="${PROMPT# }"  # trim leading space
+
+if [ "$ENGINE" != "claude" ] && [ "$ENGINE" != "codex" ]; then
+  echo "Error: --engine must be 'claude' or 'codex' (got: $ENGINE)"
+  exit 1
+fi
 
 # Parse PR identity early so the task directory and pre-fetch can both reuse it.
 if [ -n "$PR_URL" ]; then
@@ -48,6 +83,7 @@ if [ -n "$PR_URL" ]; then
     echo "Expected form: https://github.com/<owner>/<repo>/pull/<N>"
     exit 1
   fi
+  PR_URL="https://github.com/$REPO/pull/$PR_NUMBER"
   if ! gh api "repos/$REPO/pulls/$PR_NUMBER" --silent 2>/dev/null; then
     echo "Error: PR not found or inaccessible: https://github.com/$REPO/pull/$PR_NUMBER"
     echo "Check the URL, the repository name, and your gh auth scopes."
@@ -64,9 +100,10 @@ DEFAULT_PROMPT="Full task review of this PR following GUIDE.md end-to-end. All p
 if [ -z "$PROMPT" ]; then
   if [ -z "$PR_URL" ]; then
     echo "Usage: ./run.sh --pr <github-pr-url>"
-    echo "       ./run.sh \"your prompt\" [--pr <github-pr-url>]"
+    echo "       ./run.sh \"your prompt\" [--pr <github-pr-url>] [--engine claude|codex]"
     echo ""
     echo "  With --pr and no prompt, performs the full GUIDE.md task review."
+    echo "  --engine codex runs OpenAI Codex CLI instead of Claude Code."
     exit 1
   fi
   PROMPT="$DEFAULT_PROMPT"
@@ -154,69 +191,139 @@ if [ -z "$GH_TOKEN" ]; then
   echo "Warning: Could not retrieve GitHub token. gh will not be authenticated."
 fi
 
-# Claude Code model + effort, with defaults that can be overridden in .env.
-CLAUDE_MODEL="claude-opus-4-8"
+# Per-engine model + effort defaults, overridable in .env.
+CLAUDE_MODEL="claude-fable-5"
 CLAUDE_EFFORT="xhigh"
+CODEX_MODEL="gpt-6-astra"
+CODEX_EFFORT="xhigh"
 
-# Claude API key: prefer .env file (long-lived), fall back to Keychain OAuth token (may expire).
-# .env can also override CLAUDE_MODEL / CLAUDE_EFFORT.
+# Credentials, read from .env.
+#   claude engine: ANTHROPIC_API_KEY (Console key) or CLAUDE_CODE_OAUTH_TOKEN
+#     (long-lived subscription token from `claude setup-token`); key wins.
+#   codex engine: OPENAI_API_KEY, or — if unset — a host `codex login`
+#     session mounted from ~/.codex (ChatGPT subscription auth.json).
+#
+# Never scrape the claude.ai accessToken from the Keychain: it is rejected
+# when passed as ANTHROPIC_API_KEY (401 by design) and expires within hours.
+ANTHROPIC_KEY=""
+OAUTH_TOKEN=""
+OPENAI_KEY=""
 if [ -f "$SCRIPT_DIR/.env" ]; then
-  CLAUDE_TOKEN="$(grep '^ANTHROPIC_API_KEY=' "$SCRIPT_DIR/.env" | cut -d= -f2-)"
-  ENV_MODEL="$(grep '^CLAUDE_MODEL=' "$SCRIPT_DIR/.env" | cut -d= -f2-)"
-  ENV_EFFORT="$(grep '^CLAUDE_EFFORT=' "$SCRIPT_DIR/.env" | cut -d= -f2-)"
+  # `|| true` guards: under `set -euo pipefail`, a grep with no matching line
+  # would otherwise kill the script silently.
+  ANTHROPIC_KEY="$(grep '^ANTHROPIC_API_KEY=' "$SCRIPT_DIR/.env" | cut -d= -f2- || true)"
+  OAUTH_TOKEN="$(grep '^CLAUDE_CODE_OAUTH_TOKEN=' "$SCRIPT_DIR/.env" | cut -d= -f2- || true)"
+  OPENAI_KEY="$(grep '^OPENAI_API_KEY=' "$SCRIPT_DIR/.env" | cut -d= -f2- || true)"
+  ENV_MODEL="$(grep '^CLAUDE_MODEL=' "$SCRIPT_DIR/.env" | cut -d= -f2- || true)"
+  ENV_EFFORT="$(grep '^CLAUDE_EFFORT=' "$SCRIPT_DIR/.env" | cut -d= -f2- || true)"
+  ENV_CODEX_MODEL="$(grep '^CODEX_MODEL=' "$SCRIPT_DIR/.env" | cut -d= -f2- || true)"
+  ENV_CODEX_EFFORT="$(grep '^CODEX_EFFORT=' "$SCRIPT_DIR/.env" | cut -d= -f2- || true)"
   [ -n "$ENV_MODEL" ] && CLAUDE_MODEL="$ENV_MODEL"
   [ -n "$ENV_EFFORT" ] && CLAUDE_EFFORT="$ENV_EFFORT"
-fi
-# Fall back to the OAuth token from `claude` CLI login. On Linux / WSL it
-# lives at ~/.claude/.credentials.json; on macOS it's in the Keychain.
-# Try the file first (cross-platform), then the Keychain (macOS-only).
-if [ -z "$CLAUDE_TOKEN" ] && [ -f "$HOME/.claude/.credentials.json" ]; then
-  CLAUDE_TOKEN="$(python3 -c "import json; print(json.load(open('$HOME/.claude/.credentials.json')).get('claudeAiOauth',{}).get('accessToken',''))" 2>/dev/null || true)"
+  [ -n "$ENV_CODEX_MODEL" ] && CODEX_MODEL="$ENV_CODEX_MODEL"
+  [ -n "$ENV_CODEX_EFFORT" ] && CODEX_EFFORT="$ENV_CODEX_EFFORT"
 fi
 
-if [ -z "$CLAUDE_TOKEN" ] && command -v security >/dev/null 2>&1; then
-  CLAUDE_CREDS="$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null || true)"
-  if [ -n "$CLAUDE_CREDS" ]; then
-    CLAUDE_TOKEN="$(echo "$CLAUDE_CREDS" | python3 -c "import json,sys; print(json.load(sys.stdin).get('claudeAiOauth',{}).get('accessToken',''))" 2>/dev/null || true)"
+if [ "$ENGINE" = "codex" ]; then
+  if [ -n "$OPENAI_KEY" ]; then
+    AUTH_ARGS=(-e "OPENAI_API_KEY=$OPENAI_KEY")
+    AUTH_KIND="openai-api-key"
+  elif [ -f "$HOME/.codex/auth.json" ]; then
+    # ChatGPT-subscription login from the host. Mounted rw so Codex can
+    # persist token refreshes back to the host session.
+    AUTH_ARGS=(-v "$HOME/.codex:/home/node/.codex:rw")
+    AUTH_KIND="chatgpt-subscription"
+  else
+    cat >&2 <<EOF
+Error: No Codex credentials found.
+
+Set up one of these:
+
+  1. ChatGPT subscription (Plus/Pro) — no API key needed:
+       codex login   # browser flow; writes ~/.codex/auth.json
+     run.sh mounts ~/.codex into the container automatically.
+
+  2. OpenAI API key (billed per-token) in $SCRIPT_DIR/.env:
+       OPENAI_API_KEY=sk-...
+     Get a key at https://platform.openai.com/api-keys
+
+See the "Credentials" section in README.md for details.
+EOF
+    exit 1
   fi
-fi
-
-if [ -z "$CLAUDE_TOKEN" ]; then
+elif [ -n "$ANTHROPIC_KEY" ]; then
+  AUTH_ARGS=(-e "ANTHROPIC_API_KEY=$ANTHROPIC_KEY")
+  AUTH_KIND="api-key"
+elif [ -n "$OAUTH_TOKEN" ]; then
+  AUTH_ARGS=(-e "CLAUDE_CODE_OAUTH_TOKEN=$OAUTH_TOKEN")
+  AUTH_KIND="subscription"
+else
   cat >&2 <<EOF
-Error: No Anthropic API key found.
+Error: No Anthropic credentials found in $SCRIPT_DIR/.env.
 
-Set up credentials one of these ways:
+Set one of these in .env (cp $SCRIPT_DIR/.env.example $SCRIPT_DIR/.env first):
 
-  1. (Recommended) Long-lived API key in $SCRIPT_DIR/.env:
-       cp $SCRIPT_DIR/.env.example $SCRIPT_DIR/.env
-       # then edit .env and set ANTHROPIC_API_KEY=sk-ant-api03-...
+  1. Subscription (Pro/Max) OAuth token — no API key needed:
+       claude setup-token   # one-time browser flow; token lasts ~1 year
+       # then in .env:  CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+     Note: usage counts against your Claude subscription's rate limits.
+
+  2. Console API key (billed per-token):
+       # in .env:  ANTHROPIC_API_KEY=sk-ant-api03-...
      Get a key at https://console.anthropic.com/settings/keys
-
-  2. OAuth token from \`claude\` CLI login (expires periodically):
-       claude   # log in via the browser flow it opens
-     Stored in the macOS Keychain on Darwin or ~/.claude/.credentials.json
-     on Linux / WSL — run.sh checks both.
 
 See the "Credentials" section in README.md for details.
 EOF
   exit 1
 fi
 
-echo "Running Claude in sandbox (cpus=$CPUS, mem=8g, model=$CLAUDE_MODEL, effort=$CLAUDE_EFFORT)..."
-docker run --rm \
-  --cpus="$CPUS" \
-  --memory="8g" \
-  --mount type=tmpfs,destination=/workspace/tasks \
-  -e ANTHROPIC_API_KEY="$CLAUDE_TOKEN" \
-  -e GH_TOKEN="$GH_TOKEN" \
-  -v "$SCRIPT_DIR:/workspace:ro" \
-  -v "$TASKS_DIR:/tasks:rw" \
-  -v "$HOME/.gitconfig:/home/node/.gitconfig:ro" \
-  "$IMAGE_NAME" \
-  -p --dangerously-skip-permissions --verbose --output-format stream-json \
-  --model "$CLAUDE_MODEL" --effort "$CLAUDE_EFFORT" \
-  "$PROMPT" \
-  | python3 "$SCRIPT_DIR/format-stream.py"
+# Per-engine in-container command. Both run with all permission/approval
+# prompts disabled — the container is the sandbox. For codex that means
+# --dangerously-bypass-approvals-and-sandbox: Codex's own Landlock/seccomp
+# sandbox is unreliable inside containers, and any approval prompt would
+# hang a headless run.
+if [ "$ENGINE" = "codex" ]; then
+  ENGINE_CMD=(codex exec
+    --dangerously-bypass-approvals-and-sandbox
+    --skip-git-repo-check
+    --model "$CODEX_MODEL")
+  [ -n "$CODEX_EFFORT" ] && ENGINE_CMD+=(-c "model_reasoning_effort=\"$CODEX_EFFORT\"")
+  MODEL_DESC="$CODEX_MODEL${CODEX_EFFORT:+, effort=$CODEX_EFFORT}"
+else
+  ENGINE_CMD=(claude -p --dangerously-skip-permissions --verbose --output-format stream-json
+    --model "$CLAUDE_MODEL" --effort "$CLAUDE_EFFORT")
+  MODEL_DESC="$CLAUDE_MODEL, effort=$CLAUDE_EFFORT"
+fi
+
+echo "Running $ENGINE in sandbox (cpus=$CPUS, mem=8g, $MODEL_DESC, auth=$AUTH_KIND)..."
+if [ "$ENGINE" = "codex" ]; then
+  # Codex's human-readable exec output streams directly; format-stream.py
+  # only understands Claude's stream-json format.
+  docker run --rm \
+    --cpus="$CPUS" \
+    --memory="8g" \
+    --mount type=tmpfs,destination=/workspace/tasks \
+    "${AUTH_ARGS[@]}" \
+    -e GH_TOKEN="$GH_TOKEN" \
+    -v "$SCRIPT_DIR:/workspace:ro" \
+    -v "$TASKS_DIR:/tasks:rw" \
+    -v "$HOME/.gitconfig:/home/node/.gitconfig:ro" \
+    "$IMAGE_NAME" \
+    "${ENGINE_CMD[@]}" "$PROMPT"
+else
+  docker run --rm \
+    --cpus="$CPUS" \
+    --memory="8g" \
+    --mount type=tmpfs,destination=/workspace/tasks \
+    "${AUTH_ARGS[@]}" \
+    -e GH_TOKEN="$GH_TOKEN" \
+    -v "$SCRIPT_DIR:/workspace:ro" \
+    -v "$TASKS_DIR:/tasks:rw" \
+    -v "$HOME/.gitconfig:/home/node/.gitconfig:ro" \
+    "$IMAGE_NAME" \
+    "${ENGINE_CMD[@]}" "$PROMPT" \
+    | python3 "$SCRIPT_DIR/format-stream.py"
+fi
 
 # Post-process: extract specific H2 sections of review-summary.md into
 # sibling files. These H2 headings are parse anchors per GUIDE.md Step 5.
@@ -240,6 +347,38 @@ if [ -s "$TASKS_DIR/review-summary.md" ]; then
   extract_section "Unaddressed Prior Feedback" "$TASKS_DIR/unaddressed-prior-feedback.md"
   extract_section "Natural Difficulty Extensions" "$TASKS_DIR/natural-difficulty-extensions.md"
   extract_section "Agentic Task Check" "$TASKS_DIR/agentic-check.md"
+fi
+
+# Rewrite issues-found.md as human-response.md: the same feedback as a busy
+# human reviewer would write it. Second, lightweight container run (no
+# workspace mount, no gh token) since it only needs /tasks.
+if [ -s "$TASKS_DIR/issues-found.md" ]; then
+  echo "Rewriting issues-found.md as human-response.md..."
+  REWRITE_PROMPT="Read /tasks/issues-found.md and rewrite it as /tasks/human-response.md, the way a busy human reviewer who fully understands the PR would write the same feedback. Rules:
+- Include only the Critical and Major issues; drop Minor/suggested items entirely.
+- Assume the author understands their own PR: no background re-explanation, no severity headers, no numbered-issue scaffolding, no quote attributions, no reviewer-methodology asides (e.g. 'I verified this against the artifacts').
+- To the point: no pleasantries, no praise, no hedging.
+- Point out what each issue is without exhaustive evidence chains or multiple examples; keep at most one concrete fix direction per issue.
+- Not redundant: if two issues make the same underlying point, collapse them into one.
+Write short plain paragraphs to /tasks/human-response.md. Do not modify issues-found.md."
+  if [ "$ENGINE" = "codex" ]; then
+    REWRITE_CMD=("${ENGINE_CMD[@]}")
+  else
+    REWRITE_CMD=(claude -p --dangerously-skip-permissions --model "$CLAUDE_MODEL")
+  fi
+  docker run --rm \
+    --cpus="$CPUS" \
+    --memory="8g" \
+    "${AUTH_ARGS[@]}" \
+    -v "$TASKS_DIR:/tasks:rw" \
+    "$IMAGE_NAME" \
+    "${REWRITE_CMD[@]}" \
+    "$REWRITE_PROMPT" > /dev/null || true
+  if [ -s "$TASKS_DIR/human-response.md" ]; then
+    echo "Wrote $TASKS_DIR/human-response.md"
+  else
+    echo "Warning: human-response.md was not produced."
+  fi
 fi
 
 # Agentic-check verdict: per GUIDE.md Step 3, the first non-blank, non-header

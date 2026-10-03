@@ -2,32 +2,29 @@
 
 A sandboxed Docker environment for running [Claude Code](https://docs.anthropic.com/en/docs/claude-code) against [terminal-bench](https://github.com/harbor-framework/terminal-bench-3) task analyses — no permissions prompts, no host filesystem risk.
 
-Claude runs inside a locked-down container with read-only access to your workspace and a per-run writable task directory. Credentials are extracted from your macOS Keychain at launch so there's nothing to configure.
+Claude runs inside a locked-down container with read-only access to your workspace and a per-run writable task directory. Credentials come from a `.env` file in the repo root — either a Console API key or a Claude subscription OAuth token.
 
 ## Prerequisites
 
 - macOS
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/)
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) logged in (`claude` CLI authenticated) **or** an `ANTHROPIC_API_KEY` in `<repo>/.env`
+- An `ANTHROPIC_API_KEY` **or** a `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) in `<repo>/.env`
 - [GitHub CLI](https://cli.github.com/) logged in (`gh auth login`)
 - Python 3
 
 ## Credentials
 
-`run.sh` resolves the Anthropic API key in this order:
+`run.sh` reads Anthropic credentials from `.env` in the repo root (`cp .env.example .env` to create it; `.env` is gitignored so it never gets committed). Set exactly one of:
 
-1. **`.env` in the repo root** — `ANTHROPIC_API_KEY=sk-…` on its own line. Long-lived; preferred for scheduled or unattended runs. The repo ships a `.env.example` template:
+1. **`ANTHROPIC_API_KEY=sk-ant-api03-…`** — Console API key, billed per-token. Get one at <https://console.anthropic.com/settings/keys>.
 
-   ```bash
-   cp .env.example .env
-   # then edit .env and paste your key from https://console.anthropic.com/settings/keys
-   ```
+2. **`CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-…`** — Claude subscription (Pro/Max) token, no API key needed. Mint it once with `claude setup-token` (browser flow); it lasts about a year. Container usage counts against the same subscription rate limits as your interactive sessions.
 
-   `.env` itself is gitignored so it never gets committed.
+If both are set, the API key wins. If neither resolves, the script exits with setup instructions.
 
-2. **OAuth token from `claude` CLI login** — zero config, but expires periodically. Stored in the macOS Keychain on Darwin or `~/.claude/.credentials.json` on Linux / WSL. `run.sh` checks both, so the same script works on either platform.
+With `--engine codex`, credentials resolve instead as: **`OPENAI_API_KEY=sk-…`** in `.env` (per-token billing), or — if unset — a host **`codex login`** session (ChatGPT Plus/Pro subscription; `~/.codex` is mounted into the container so token refreshes persist). `CODEX_MODEL` (default `gpt-6-astra`) and `CODEX_EFFORT` (default `xhigh`) are also read from `.env`; both settings apply to the main run and the rewrite step. Codex runs with `--dangerously-bypass-approvals-and-sandbox`: the container is the sandbox, and any approval prompt would hang a headless run.
 
-If neither resolves, the script exits with a multi-line error that names the exact paths and the URL where you can get a key.
+> **Note:** the short-lived claude.ai accessToken in the macOS Keychain / `~/.claude/.credentials.json` does *not* work here — the API rejects it when presented as an API key, and it expires within hours. Earlier versions of `run.sh` tried it as a fallback; that path was removed.
 
 `GH_TOKEN` is taken from your `gh auth login` session. Posting reviews via `--review` requires that token to have write scope on the target repository.
 
@@ -36,11 +33,11 @@ If neither resolves, the script exits with a multi-line error that names the exa
 `.env` also controls the model and reasoning effort used inside the container:
 
 ```
-CLAUDE_MODEL=claude-opus-4-8   # any model ID claude CLI accepts
-CLAUDE_EFFORT=xhigh            # low / medium / high / xhigh / max (Opus 4.8); other models fall back to high
+CLAUDE_MODEL=claude-fable-5    # any model ID claude CLI accepts
+CLAUDE_EFFORT=xhigh            # low / medium / high / xhigh / max (Fable 5); other models fall back to high
 ```
 
-Defaults to `claude-opus-4-8` + `xhigh` if either is missing. No host `~/.claude*` files are bind-mounted into the container, so model and effort are the only Claude Code knobs that carry over.
+Defaults to `claude-fable-5` + `xhigh` if either is missing. No host `~/.claude*` files are bind-mounted into the container, so model and effort are the only Claude Code knobs that carry over.
 
 ## Quick start
 
@@ -49,6 +46,9 @@ git clone <this-repo> && cd bench-press
 
 # Full GUIDE.md task review of a PR — the only command you typically need
 ./run.sh --pr https://github.com/harbor-framework/terminal-bench-3/pull/166
+
+# Same, but driven by OpenAI Codex (gpt-6-astra, xhigh effort) instead of Claude Code
+./run.sh --pr <url> --engine codex
 ```
 
 That's it. `--pr` triggers a complete review: rubric alignment, instruction-bloat check, per-trial failure taxonomy reconstructed from primary artifacts, and a `review-summary.md` written to the task directory.
@@ -57,7 +57,7 @@ Concurrent runs against different PRs work in parallel — each PR has its own n
 
 ## How it works
 
-1. **`run.sh`** builds the Docker image (if needed), extracts your Claude and GitHub tokens from macOS Keychain, and launches a container.
+1. **`run.sh`** builds the Docker image (if needed), reads your Anthropic credentials from `.env` and your GitHub token from `gh`, and launches a container.
 2. With `--pr <url>`, the script pre-fetches the `/run` and `/cheat` result comments, the PR description and diff, all PR comments, and the five sticky CI bot comments into a per-PR directory at `tasks/<owner>/<repo>/pr-<N>/`.
 3. Claude Code runs in `--dangerously-skip-permissions` mode inside the container — safe because the container is the sandbox.
 4. The PR directory is bind-mounted at `/tasks` inside the container (writable; outputs survive container exit). The project root is mounted read-only at `/workspace` so the agent can read `GUIDE.md`; the host's `tasks/` history is hidden behind a tmpfs so the agent can't read prior runs by accident. Your `~/.gitconfig` is bind-mounted so any in-container git activity is attributed to you.
@@ -74,6 +74,8 @@ Concurrent runs against different PRs work in parallel — each PR has its own n
 The built-in prompt drives the full GUIDE.md review end-to-end. No customization needed. URL fragments (`#issuecomment-…`), query strings, and path suffixes (`/files`, `/commits`) are stripped automatically — paste copy-from-browser URLs without scrubbing.
 
 After the run completes, the script also extracts the `## Issues Found` section from `review-summary.md` into a sibling `issues-found.md` (always, regardless of `--review`).
+
+On exit, including errors and interrupts, `run.sh` prints the exit code, the task directory (if assigned), and the PR URL as its last line. Runs without `--pr` explicitly say no PR was supplied. The original exit code is preserved.
 
 ### Submit a review automatically
 
@@ -139,7 +141,7 @@ bench-press/
 ├── format-stream.py    # Filters stream-json output into readable terminal output
 ├── GUIDE.md            # Analysis methodology and replay guide
 ├── README.md           # This file
-├── .env                # (optional, gitignored) ANTHROPIC_API_KEY=sk-...
+├── .env                # (gitignored) ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN
 └── tasks/              # Created at runtime, gitignored
     ├── <owner>/<repo>/pr-<N>/        # PR mode: namespaced per PR, persists across runs
     │   ├── trajectory_analysis.md    # /run results comment       (pre-fetched)
@@ -193,13 +195,21 @@ Running Claude in sandbox (cpus=14, mem=8g)...
 [tool] Write: /tasks/review-summary.md
 [done] 46 turns, 733.2s, $2.0985
 Extracted Issues Found section → /…/tasks/.../pr-330/issues-found.md
+
+Run ended (exit code 0).
+Task directory: /…/tasks/harbor-framework/terminal-bench-3/pr-330
+PR: https://github.com/harbor-framework/terminal-bench-3/pull/330
 ```
 
-With `--review`, a final line shows the posted review URL:
+With `--review`, the posted review URL appears before the final run reference:
 
 ```
 Submitting REQUEST_CHANGES review to harbor-framework/terminal-bench-3#330...
 Review posted: https://github.com/harbor-framework/terminal-bench-3/pull/330#pullrequestreview-...
+
+Run ended (exit code 0).
+Task directory: /…/tasks/harbor-framework/terminal-bench-3/pr-330
+PR: https://github.com/harbor-framework/terminal-bench-3/pull/330
 ```
 
 ## Security notes

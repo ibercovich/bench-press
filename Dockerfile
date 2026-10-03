@@ -16,16 +16,16 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     apt-get update && apt-get install -y gh && \
     rm -rf /var/lib/apt/lists/*
 
-# Claude Code CLI
-RUN npm install -g @anthropic-ai/claude-code
+# Claude Code CLI + OpenAI Codex CLI
+RUN npm install -g @anthropic-ai/claude-code @openai/codex
 
 # Run as the built-in 'node' user (uid 1000)
 USER node
 ENV HOME=/home/node
 
-# Pre-create writable directories Claude needs at runtime
-RUN mkdir -p /home/node/.claude
+# Pre-create writable directories the CLIs need at runtime
+RUN mkdir -p /home/node/.claude /home/node/.codex
 
 WORKDIR /workspace
 
-ENTRYPOINT ["claude"]
+# No ENTRYPOINT: run.sh passes the full command (claude ... or codex exec ...)
